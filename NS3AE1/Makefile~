@@ -1,0 +1,17 @@
+CC=gcc
+CFLAGS=-W -Wall -Werror
+
+dt_server: dt_server.o
+	$(CC) -o $@ $^
+
+d_client: d_client.o
+	$(CC) -o $@ $^
+
+t_client: t_client.o
+	$(CC) -o $@ $^
+
+%.o: %.c
+	$(CC) -c $(CFLAGS) $<
+
+clean:
+	rm *.o;
