@@ -22,6 +22,7 @@ int initialiseFd(){
     if (fd == -1) {
         printf("Error: Failed to create socket.");
     }
+    printf("Initialised FD...\n");
     return fd;
 }   
 
@@ -29,19 +30,23 @@ struct sockaddr_in defineSocket(struct sockaddr_in addr, int port){
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons(port);
+    printf("Defined Socket...\n");
     return addr;
 }
 
 void bindSocket(int fd, struct sockaddr_in addr){
     if (bind(fd, (struct sockaddr *) &addr, sizeof(addr))==-1) {
         printf("Error: Binding of socket failed.");
+        fprintf(stderr,"Errno %d: %s\n",errno,strerror(errno));
     }
+    printf("Bound Socket...\n");
 }
 
 void listenFd(int fd, int i){
     if (listen(fd,i)==-1){
         printf("Error: Could not listen for connections.");
     }
+    printf("Began Listening For Connections...\n");
 }
 
 int initialiseConnFd(int fd, struct sockaddr_in cliaddr, socklen_t cliaddrlen){
@@ -49,6 +54,7 @@ int initialiseConnFd(int fd, struct sockaddr_in cliaddr, socklen_t cliaddrlen){
     if(connfd == -1){
         printf("Error: Connection acceptance failed.");
     }
+    printf("Initialised Connection FD...\n");
     return connfd;
 }
 
@@ -65,7 +71,7 @@ void writeBadRequest(int connfd,char* protocol,int bluh){
     int plen = strlen(page);
     page[plen]='\0';
     printf("400 File Size:%d %d\n",(int)fs.st_size,bluh);
-    sprintf(response,"%s 400 Bad Response\nContent-Type: text/html\nConnection: close\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
+    sprintf(response,"%s 400 Bad Response\nContent-Type: text/html\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
     plen = strlen(response);
     response[plen]='\0';
     if(write(connfd,response,strlen(response))==-1){fprintf(stderr,"400 Errno %d: %s\n",errno,strerror(errno));}
@@ -81,11 +87,10 @@ void writeFileNotFound(int connfd,char* protocol){
     int fd = open("404.html", O_RDONLY);
     if(fstat(fd,&fs)==-1){printf("Could Not retrieve file size in 404.\n");}
     page = (char*)malloc(fs.st_size+1);
-    read(fd,page,fs.st_size);
-    int plen = strlen(page);
+    ssize_t plen = read(fd,page,fs.st_size);
     page[plen]='\0';
     printf("404 File Size:%d\n",(int)fs.st_size);
-    sprintf(response,"%s 404 File Not Found\nContent-Type: text/html\nConnection: close\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
+    sprintf(response,"%s 404 File Not Found\nContent-Type: text/html\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
     plen = strlen(response);
     response[plen]='\0';
     if(write(connfd,response,strlen(response))==-1){fprintf(stderr,"404 Errno %d: %s\n",errno,strerror(errno));}
@@ -94,22 +99,55 @@ void writeFileNotFound(int connfd,char* protocol){
     free(page);
 }
 
+char* contentType(char* url){
+    char* ctype;
+    char* extension;
+    extension = strstr(url,".");
+    if(strcmp(extension,".htm")==0 || strcmp(extension,".html")==0){
+        ctype = "text/html";   
+    }
+    else if(strcmp(extension,".jpg")==0 || strcmp(extension,".jpeg")==0){
+        ctype = "image/jpeg";   
+    }
+    else if(strcmp(extension,".gif")==0){
+        ctype = "image/gif";   
+    }
+    else if(strcmp(extension,".txt")==0){
+        ctype = "text/plain";   
+    }
+    else{ctype = "application/octet-stream";}
+    return ctype;
+
+}
+
 void writeRequested(int connfd,char* protocol,char* url){
     struct stat fs;
     char response[1024];
     char* page; 
+    char* contType;
+    contType = contentType(url);
+
     int fd = open(url+1, O_RDONLY);
-    if(fd==-1){writeFileNotFound(connfd,protocol);return;}
-    if(fstat(fd,&fs)==-1){printf("Could Not retrieve file size!\n");}
+    if(fd==-1){
+        writeFileNotFound(connfd,protocol);
+        return;
+    }
+    if(fstat(fd,&fs)==-1){
+        printf("Could Not retrieve file size!\n");
+    }
+
     page = (char*)malloc(fs.st_size);
     read(fd,page,fs.st_size);
-    int plen = strlen(page);
-    page[plen]='\0';
-    printf("200 File Size:%d\n",(int)fs.st_size);
-    sprintf(response,"%s 200 OK\nContent-Type: text/html\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
-    plen = strlen(response);
-    response[plen]='\0';
-    if(write(connfd,response,strlen(response))==-1){fprintf(stderr,"200 Errno %d: %s\n",errno,strerror(errno));}
+
+    sprintf(response,"%s 200 OK\nContent-Type: %s\nContent-Length: %d\r\n\r\n",protocol,contType,(int)fs.st_size);
+
+    if(write(connfd,response,strlen(response))==-1){
+        fprintf(stderr,"200 Errno %d: %s\n",errno,strerror(errno));
+    }
+    if(write(connfd,page,fs.st_size)==-1){
+        fprintf(stderr,"200 Errno %d: %s\n",errno,strerror(errno));
+    }
+    printf("%lu\n",pthread_self());
     printf("Wrote:\n%s\n",response);
     close(fd);
     free(page); 
@@ -124,9 +162,15 @@ int verifyGet(char* get){
     else{return 1;}
 }
 
-void readRequest(int connfd, char* buf,ssize_t bufsize){
+void* readRequest(void* voidconn){
+    int connfd = *(int*)voidconn;    
+    printf("Entered readRequest.\n");
+    char* buf;
+    ssize_t bufsize = 10;
+    buf=(char*)malloc(bufsize+1);        
     ssize_t rcount;
     ssize_t totalRead=0;
+    printf("Beginning Read...\n");
     while((rcount = read(connfd, buf+totalRead,(bufsize)-totalRead))!=0){
         if (rcount == -1) {
             printf("Error: failed to read from connection.\n");
@@ -138,19 +182,21 @@ void readRequest(int connfd, char* buf,ssize_t bufsize){
             buf = (char*)realloc(buf,bufsize*2+1);
             bufsize=bufsize*2+1;
         }
+
+        buf[totalRead] = '\0';
+
         if(strstr(buf,"\r\n\r\n")!=NULL){
             printf("\nReceived Request:\n%s\r\n",buf); 
             char get[8096];
             char url[8096];
             char protocol[8096];
             char hosttmp[HOST_NAME_MAX+6];            
-            int buflen = strlen(buf);
-            buf[buflen] = '\0';
+
             /*Get GET, URL, and Protocol*/
             int splitval;
             splitval = sscanf(buf,"%s %s %s\r\n",get,url,protocol);
-            buflen = strlen(url);
-            url[buflen] = '\0';
+            //int buflen = strlen(url);
+            //url[buflen] = '\0';
      
             /*Get Hostname*/
             /*creates pointers to the location of the Host line and the start of the port section*/
@@ -159,8 +205,8 @@ void readRequest(int connfd, char* buf,ssize_t bufsize){
             char host[HOST_NAME_MAX];
             /*Strips out port number from host name, puts portless hostname in host*/
             splitval = sscanf(hostLoc,"Host: %s\r\n",hosttmp);
-            buflen = strlen(hosttmp);
-            hosttmp[buflen] = '\0';
+            //buflen = strlen(hosttmp);
+            //hosttmp[buflen] = '\0';
             printf("%s\n",hosttmp);
             portStart = strstr(hosttmp,":");
             size_t portLoc = portStart - hosttmp;
@@ -174,39 +220,41 @@ void readRequest(int connfd, char* buf,ssize_t bufsize){
             if(strncmp(get,"GET",3)!=0){
                 printf("Bad GET\n");
                 writeBadRequest(connfd,protocol,0);
-                break;  
             }
             /*TODO: Check against both [hostname] and [hostname].dcs.gla.ac.uk*/
             else if(strncmp(gotHost,host,HOST_NAME_MAX)!=0){
                 writeBadRequest(connfd,protocol,1);
-                printf("Bad host\n");
-                break;                
+                printf("Bad host\n");             
             }
             else{writeRequested(connfd,protocol,url);totalRead=0;memset(buf,0,sizeof(buf));}
         } 
     }
+    free(buf);
+    close(connfd);
+    free(voidconn);
+    return NULL;
 }
 
 int main(){
     int fd;
     struct sockaddr_in addr;
-    int connfd;
     struct sockaddr_in cliaddr;
     socklen_t cliaddrlen = sizeof(cliaddr);
-    char* buf;
-    ssize_t bufsize = 10;
-    buf=(char*)malloc(bufsize+1);
-    
+
     /*Create file descriptor, define socket, bind socket, listen on fd, create new connection fd, read incoming request into buffer buf.*/
     fd = initialiseFd();
     addr = defineSocket(addr,8080);
     bindSocket(fd,addr);
     listenFd(fd,4);
-    connfd = initialiseConnFd(fd,cliaddr,cliaddrlen);
-    readRequest(connfd, buf,bufsize);
-    free(buf);
+
+    while(1){
+        int* connfd = malloc(sizeof(int));
+        pthread_t thrd;
+        *connfd = initialiseConnFd(fd,cliaddr,cliaddrlen);
+        pthread_create(&thrd,NULL,readRequest,(void*)connfd);
+    }    
+
     /*close fd*/
-    close(connfd);
     close(fd);
     return 0;
 
