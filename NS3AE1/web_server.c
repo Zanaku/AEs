@@ -36,8 +36,11 @@ struct sockaddr_in defineSocket(struct sockaddr_in addr, int port){
 
 void bindSocket(int fd, struct sockaddr_in addr){
     if (bind(fd, (struct sockaddr *) &addr, sizeof(addr))==-1) {
-        printf("Error: Binding of socket failed.");
-        fprintf(stderr,"Errno %d: %s\n",errno,strerror(errno));
+        printf("Error: Binding of socket failed.\nRetrying...\n");
+        //fprintf(stderr,"Errno %d: %s\n",errno,strerror(errno));
+        sleep(5);
+        bindSocket(fd,addr);
+        return;
     }
     printf("Bound Socket...\n");
 }
@@ -60,7 +63,7 @@ int initialiseConnFd(int fd, struct sockaddr_in cliaddr, socklen_t cliaddrlen){
 
 /*===REQUEST MANAGEMENT===*/
 
-void writeBadRequest(int connfd,char* protocol,int bluh){
+void writeBadRequest(int connfd,char* protocol){
     struct stat fs;
     char response[1024];
     char* page; 
@@ -70,8 +73,8 @@ void writeBadRequest(int connfd,char* protocol,int bluh){
     read(fd,page,fs.st_size);
     int plen = strlen(page);
     page[plen]='\0';
-    printf("400 File Size:%d %d\n",(int)fs.st_size,bluh);
-    sprintf(response,"%s 400 Bad Response\nContent-Type: text/html\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
+    printf("400 File Size:%d\n",(int)fs.st_size);
+    sprintf(response,"%s 400 Bad Response\nContent-Type: text/html\nConnection: close\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
     plen = strlen(response);
     response[plen]='\0';
     if(write(connfd,response,strlen(response))==-1){fprintf(stderr,"400 Errno %d: %s\n",errno,strerror(errno));}
@@ -90,7 +93,7 @@ void writeFileNotFound(int connfd,char* protocol){
     ssize_t plen = read(fd,page,fs.st_size);
     page[plen]='\0';
     printf("404 File Size:%d\n",(int)fs.st_size);
-    sprintf(response,"%s 404 File Not Found\nContent-Type: text/html\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
+    sprintf(response,"%s 404 File Not Found\nContent-Type: text/html\nConnection: close\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
     plen = strlen(response);
     response[plen]='\0';
     if(write(connfd,response,strlen(response))==-1){fprintf(stderr,"404 Errno %d: %s\n",errno,strerror(errno));}
@@ -99,7 +102,17 @@ void writeFileNotFound(int connfd,char* protocol){
     free(page);
 }
 
+void writeInternal(int connfd,char* protocol){
+    char response[1024];
+    sprintf(response,"%s 500 Internal Server Error\nContent-Type: text/html\nConnection: close\nContent-Length: 237\r\n\r\n<HTML><!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\"http://www.w3.org/TR/html4/strict.dtd\"><HTML><HEAD><TITLE> 500 Internal Server Error </TITLE></HEAD><BODY> The server has encountered an internal error. Sorry! :( </BODY><HTML>",protocol);
+    ssize_t plen = strlen(response);
+    response[plen]='\0';
+    if(write(connfd,response,strlen(response))==-1){fprintf(stderr,"500 Errno %d: %s\n",errno,strerror(errno));}
+    printf("Wrote:\n%s\n",response);
+}
+
 char* contentType(char* url){
+    /*Generates content type for return based on the extension of the url requested. Only supports file types listed in handout.*/
     char* ctype;
     char* extension;
     extension = strstr(url,".");
@@ -134,6 +147,7 @@ void writeRequested(int connfd,char* protocol,char* url){
     }
     if(fstat(fd,&fs)==-1){
         printf("Could Not retrieve file size!\n");
+        writeInternal(connfd,protocol);
     }
 
     page = (char*)malloc(fs.st_size);
@@ -147,8 +161,8 @@ void writeRequested(int connfd,char* protocol,char* url){
     if(write(connfd,page,fs.st_size)==-1){
         fprintf(stderr,"200 Errno %d: %s\n",errno,strerror(errno));
     }
-    printf("%lu\n",pthread_self());
-    printf("Wrote:\n%s\n",response);
+    printf("Returning Response from Thread %lu\n",pthread_self());
+    printf("****Writing Response****\n%s\n",response);
     close(fd);
     free(page); 
 }
@@ -163,72 +177,92 @@ int verifyGet(char* get){
 }
 
 void* readRequest(void* voidconn){
+    /*Sets connfd to the passed connfd that is malloc'd outside*/
     int connfd = *(int*)voidconn;    
-    printf("Entered readRequest.\n");
+    /*Mallocs a new buffer to hold the read data.*/    
     char* buf;
-    ssize_t bufsize = 10;
+    ssize_t bufsize = 1024;
     buf=(char*)malloc(bufsize+1);        
+    /*rcount holds the value returned by read, while totalRead keeps track of the total amount read for this request.*/    
     ssize_t rcount;
     ssize_t totalRead=0;
-    printf("Beginning Read...\n");
+
+    printf("Reading from Client...\n");
     while((rcount = read(connfd, buf+totalRead,(bufsize)-totalRead))!=0){
         if (rcount == -1) {
-            printf("Error: failed to read from connection.\n");
+            printf("Error: failed to read from connection!\n");
             fprintf(stderr,"Errno %d: %s\n",errno,strerror(errno));
             break;
         }
+        /*Update the total read counter, and if necessary increase the buffer size. Afterwards add a null character to the end of the buffer.*/
         totalRead+=rcount;
         if(totalRead >= bufsize){
             buf = (char*)realloc(buf,bufsize*2+1);
             bufsize=bufsize*2+1;
         }
-
         buf[totalRead] = '\0';
-
+        
+        /*Looks for the end of the request, and if found processes.*/
         if(strstr(buf,"\r\n\r\n")!=NULL){
-            printf("\nReceived Request:\n%s\r\n",buf); 
-            char get[8096];
-            char url[8096];
-            char protocol[8096];
+            printf("****Received Request****\n%s",buf);
+            /*Sets up buffers to contain GET, URL, and Protocol. Sizes were made large enough to hopefully contain most sensible requests. 
+             *Hosttmp is created with a size to hold the maximum possible host name, as well as a colon followed by a port.*/ 
+            char get[1024];
+            char url[1024];
+            char protocol[1024];
             char hosttmp[HOST_NAME_MAX+6];            
 
-            /*Get GET, URL, and Protocol*/
+            /*Strips expected GET, URL, and Protocol from first line*/
             int splitval;
             splitval = sscanf(buf,"%s %s %s\r\n",get,url,protocol);
-            //int buflen = strlen(url);
-            //url[buflen] = '\0';
      
-            /*Get Hostname*/
-            /*creates pointers to the location of the Host line and the start of the port section*/
+            /*Creates pointers to the location of the Host line and the start of the port segment of this*/
             char* hostLoc = strstr(buf,"Host:");
             char* portStart;
+
+            /*Strips out port number from host name, puts portless hostname in host buffer*/
             char host[HOST_NAME_MAX];
-            /*Strips out port number from host name, puts portless hostname in host*/
             splitval = sscanf(hostLoc,"Host: %s\r\n",hosttmp);
-            //buflen = strlen(hosttmp);
-            //hosttmp[buflen] = '\0';
-            printf("%s\n",hosttmp);
             portStart = strstr(hosttmp,":");
+
             size_t portLoc = portStart - hosttmp;
+
             strncpy(host,hosttmp,portLoc);
             host[portLoc]='\0';
-            printf("%s\n",host);
+
+            
             char gotHost[HOST_NAME_MAX];
             gethostname(gotHost,HOST_NAME_MAX);
-            printf("%s\n",gotHost);
+
+            printf("*****Host Info*****\nReceived Host: %s\nActual Host: %s\n",host,gotHost);
+
+            /*Creates variants on hostname received and gethostname host with dcs.gla.ac.uk at the end.*/
+            char DCSgotHost[HOST_NAME_MAX];
+            sprintf(DCSgotHost,"%s.dcs.gla.ac.uk",gotHost);
+            char DCShost[HOST_NAME_MAX];
+            sprintf(DCShost,"%s.dcs.gla.ac.uk",host);
+
             /*Check that GET starts*/
             if(strncmp(get,"GET",3)!=0){
-                printf("Bad GET\n");
-                writeBadRequest(connfd,protocol,0);
+                printf("Did not receive initial GET request!\n");
+                writeBadRequest(connfd,protocol);
             }
-            /*TODO: Check against both [hostname] and [hostname].dcs.gla.ac.uk*/
-            else if(strncmp(gotHost,host,HOST_NAME_MAX)!=0){
-                writeBadRequest(connfd,protocol,1);
-                printf("Bad host\n");             
+            /*Check received host against result from gethostname(). Also checks variations using dcs.gla.ac.uk*/
+            else if((strcmp(gotHost,host)!=0)&&
+                   ((strcmp(DCSgotHost,host)!=0)&&
+                   (strcmp(gotHost,DCShost)!=0))){
+                writeBadRequest(connfd,protocol);
+                printf("Hostname Mismatch encountered!\n");             
             }
-            else{writeRequested(connfd,protocol,url);totalRead=0;memset(buf,0,sizeof(buf));}
+            else{
+                /*Assuming nothing else goes wrong, write the requested page, and reset the buffer for further reads.*/
+                writeRequested(connfd,protocol,url);
+                totalRead=0;
+                memset(buf,0,sizeof(buf));
+                }
         } 
     }
+    /*Frees the buffer, closes the connection, frees the allocated space for the connection value. Returns null as required for void*. */
     free(buf);
     close(connfd);
     free(voidconn);
@@ -236,6 +270,7 @@ void* readRequest(void* voidconn){
 }
 
 int main(){
+    /*Declares the base file descriptor, and the addresses.*/    
     int fd;
     struct sockaddr_in addr;
     struct sockaddr_in cliaddr;
