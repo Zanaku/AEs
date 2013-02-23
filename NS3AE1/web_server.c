@@ -63,50 +63,45 @@ int initialiseConnFd(int fd, struct sockaddr_in cliaddr, socklen_t cliaddrlen){
 
 /*===REQUEST MANAGEMENT===*/
 
+/*Potentially the four write functions could have been condensed into one, 
+ *taking some form of flag in order to decide which hardcoded/requested page to return.
+ *Decided just to leave them as is, though, for time reasons.*/
+
 void writeBadRequest(int connfd,char* protocol){
-    struct stat fs;
+    /*Creates a buffer to hold the response.*/
     char response[1024];
-    char* page; 
-    int fd = open("400.html", O_RDONLY);
-    if(fstat(fd,&fs)==-1){printf("Could Not retrieve file size in Bad Request.\n");}
-    page = (char*)malloc(fs.st_size+1);
-    read(fd,page,fs.st_size);
-    int plen = strlen(page);
-    page[plen]='\0';
-    printf("400 File Size:%d\n",(int)fs.st_size);
-    sprintf(response,"%s 400 Bad Response\nContent-Type: text/html\nConnection: close\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
-    plen = strlen(response);
+    /*Builds a hardcoded response using the provided protocol.*/
+    sprintf(response,"%s 400 Bad Request\nContent-Type: text/html\nConnection: close\nContent-Length: 255\r\n\r\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\"http://www.w3.org/TR/html4/strict.dtd\"><html><head><title> 400 Bad Request </title></head><body>Grievous Commiserations, your Request has been deemed <b>BAD.</b></body></html>",protocol);
+    /*Adds a null character to ensure correct string functionality*/
+    ssize_t plen = strlen(response);
     response[plen]='\0';
+    /*Attempts to write response.*/
     if(write(connfd,response,strlen(response))==-1){fprintf(stderr,"400 Errno %d: %s\n",errno,strerror(errno));}
     printf("Wrote:\n%s\n",response);
-    close(fd);
-    free(page);
 }
 
 void writeFileNotFound(int connfd,char* protocol){
-    struct stat fs;
+    /*Creates a buffer to hold the response.*/
     char response[1024];
-    char* page; 
-    int fd = open("404.html", O_RDONLY);
-    if(fstat(fd,&fs)==-1){printf("Could Not retrieve file size in 404.\n");}
-    page = (char*)malloc(fs.st_size+1);
-    ssize_t plen = read(fd,page,fs.st_size);
-    page[plen]='\0';
-    printf("404 File Size:%d\n",(int)fs.st_size);
-    sprintf(response,"%s 404 File Not Found\nContent-Type: text/html\nConnection: close\nContent-Length: %d\r\n\r\n%s",protocol,(int)fs.st_size,page);
-    plen = strlen(response);
+    /*Builds a hardcoded response using the provided protocol.*/
+    sprintf(response,"%s 404 File Not Found\nContent-Type: text/html\nConnection: close\nContent-Length: 202\r\n\r\n<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\"http://www.w3.org/TR/html4/strict.dtd\"><html><head><title> 404 Not Found </title></head><body><p> The requested file cannot be found. </p></body></html>",protocol);
+    /*Adds a null character to ensure correct string functionality*/    
+    ssize_t plen = strlen(response);
     response[plen]='\0';
+    /*Attempts to write response.*/
     if(write(connfd,response,strlen(response))==-1){fprintf(stderr,"404 Errno %d: %s\n",errno,strerror(errno));}
     printf("Wrote:\n%s\n",response);
-    close(fd);
-    free(page);
 }
 
 void writeInternal(int connfd,char* protocol){
+    /*Creates a buffer to hold the response.*/
     char response[1024];
+    /*Builds a hardcoded response using the provided protocol.*/
     sprintf(response,"%s 500 Internal Server Error\nContent-Type: text/html\nConnection: close\nContent-Length: 237\r\n\r\n<HTML><!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\"\"http://www.w3.org/TR/html4/strict.dtd\"><HTML><HEAD><TITLE> 500 Internal Server Error </TITLE></HEAD><BODY> The server has encountered an internal error. Sorry! :( </BODY><HTML>",protocol);
+    /*Adds a null character to ensure correct string functionality*/    
     ssize_t plen = strlen(response);
     response[plen]='\0';
+    /*Attempts to write response.*/
     if(write(connfd,response,strlen(response))==-1){fprintf(stderr,"500 Errno %d: %s\n",errno,strerror(errno));}
     printf("Wrote:\n%s\n",response);
 }
