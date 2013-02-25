@@ -110,7 +110,9 @@ char* contentType(char* url){
     /*Generates content type for return based on the extension of the url requested. Only supports file types listed in handout.*/
     char* ctype;
     char* extension;
-    extension = strstr(url,".");
+    if((extension = strstr(url,"."))==NULL){
+        extension = "null";        
+    }
     if(strcmp(extension,".htm")==0 || strcmp(extension,".html")==0){
         ctype = "text/html";   
     }
@@ -275,7 +277,7 @@ int main(){
     fd = initialiseFd();
     addr = defineSocket(addr,8080);
     bindSocket(fd,addr);
-    listenFd(fd,4);
+    listenFd(fd,6);
 
     while(1){
         int* connfd = malloc(sizeof(int));
